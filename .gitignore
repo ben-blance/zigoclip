@@ -1,0 +1,19 @@
+# Build output
+clipboard.exe
+zigoclip.exe
+clipboard.exe.obj
+clipboard.pdb
+
+# Zig build artifacts
+.zig-cache/
+zig-out/
+
+# Go
+*.test
+*.out
+
+# OS / editor cruft
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
