@@ -60,6 +60,8 @@ func (d *Discovery) Run() {
 
 		message := string(buffer[:n])
 
+		log.Printf("UDP discovery from %s: %s", remote.IP, message)
+
 		if !isDiscoveryMessage(message) {
 			continue
 		}
@@ -80,12 +82,59 @@ func (d *Discovery) announce(conn *net.UDPConn) {
 
 		message := fmt.Sprintf("CLIPBOARD_DISCOVERY %s %d\n", d.deviceID, d.tcpPort)
 
-		broadcastAddr := &net.UDPAddr{IP: net.IPv4bcast, Port: d.udpPort}
+		targets := append(subnetBroadcastAddrs(), net.IPv4bcast)
 
-		if _, err := conn.WriteToUDP([]byte(message), broadcastAddr); err != nil {
-			log.Printf("UDP discovery broadcast failed: %v", err)
+		for _, ip := range targets {
+			broadcastAddr := &net.UDPAddr{IP: ip, Port: d.udpPort}
+
+			if _, err := conn.WriteToUDP([]byte(message), broadcastAddr); err != nil {
+				log.Printf("UDP discovery broadcast to %s failed: %v", ip, err)
+			}
 		}
 	}
+}
+
+func subnetBroadcastAddrs() []net.IP {
+	var addrs []net.IP
+
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		log.Printf("Failed to list network interfaces: %v", err)
+		return addrs
+	}
+
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+
+		ifaceAddrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, a := range ifaceAddrs {
+			ipnet, ok := a.(*net.IPNet)
+			if !ok {
+				continue
+			}
+
+			ip4 := ipnet.IP.To4()
+			if ip4 == nil || len(ipnet.Mask) != net.IPv4len {
+				continue
+			}
+
+			bcast := make(net.IP, net.IPv4len)
+
+			for i := 0; i < net.IPv4len; i++ {
+				bcast[i] = ip4[i] | ^ipnet.Mask[i]
+			}
+
+			addrs = append(addrs, bcast)
+		}
+	}
+
+	return addrs
 }
 
 func isDiscoveryMessage(message string) bool {
