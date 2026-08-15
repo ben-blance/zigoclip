@@ -6,16 +6,17 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 	"time"
 )
 
 const announceInterval = 2 * time.Second
 const discoveryPrefix = "CLIPBOARD_DISCOVERY "
 
-// OnPeerFound is invoked with a peer's TCP address ("host:port")
-// whenever a discovery broadcast from another device is seen. Matches
-// network.Server.Connect, so it can be passed straight in.
-type OnPeerFound func(address string)
+// OnPeerFound is invoked with a discovered peer's device ID and TCP
+// address ("host:port") whenever a discovery broadcast from another
+// device is seen.
+type OnPeerFound func(peerID, address string)
 
 type Discovery struct {
 	udpPort  int
@@ -62,17 +63,18 @@ func (d *Discovery) Run() {
 
 		log.Printf("UDP discovery from %s: %s", remote.IP, message)
 
-		if !isDiscoveryMessage(message) {
+		peerID, ok := parseDeviceID(message)
+		if !ok {
 			continue
 		}
 
-		if containsDeviceID(message, d.deviceID) {
+		if peerID == d.deviceID {
 			continue // don't connect to ourselves
 		}
 
 		peer := fmt.Sprintf("%s:%d", remote.IP.String(), d.tcpPort)
 
-		d.onPeerFound(peer)
+		d.onPeerFound(peerID, peer)
 	}
 }
 
@@ -82,6 +84,12 @@ func (d *Discovery) announce(conn *net.UDPConn) {
 
 		message := fmt.Sprintf("CLIPBOARD_DISCOVERY %s %d\n", d.deviceID, d.tcpPort)
 
+		// Sending only to 255.255.255.255 lets the OS pick whichever
+		// interface is in its routing table, which on a machine with
+		// a WSL2/Hyper-V/VPN virtual adapter is often NOT the real
+		// Wi-Fi NIC. So we send on every active interface's own
+		// subnet broadcast address instead, plus the general address
+		// as a fallback.
 		targets := append(subnetBroadcastAddrs(), net.IPv4bcast)
 
 		for _, ip := range targets {
@@ -94,6 +102,9 @@ func (d *Discovery) announce(conn *net.UDPConn) {
 	}
 }
 
+// subnetBroadcastAddrs returns the directed broadcast address (e.g.
+// 192.168.1.255) for every active, non-loopback IPv4 interface on this
+// machine.
 func subnetBroadcastAddrs() []net.IP {
 	var addrs []net.IP
 
@@ -137,12 +148,19 @@ func subnetBroadcastAddrs() []net.IP {
 	return addrs
 }
 
-func isDiscoveryMessage(message string) bool {
-	return len(message) >= len(discoveryPrefix) &&
-		message[:len(discoveryPrefix)] == discoveryPrefix
-}
+// parseDeviceID extracts the device ID from a "CLIPBOARD_DISCOVERY
+// <id> <port>" message, reporting false if the message isn't ours.
+func parseDeviceID(message string) (id string, ok bool) {
+	if !strings.HasPrefix(message, discoveryPrefix) {
+		return "", false
+	}
 
-func containsDeviceID(message string, id string) bool {
-	return len(message) > len(discoveryPrefix)+len(id) &&
-		message[len(discoveryPrefix):len(discoveryPrefix)+len(id)] == id
+	rest := strings.TrimPrefix(message, discoveryPrefix)
+
+	id, _, found := strings.Cut(rest, " ")
+	if !found {
+		return "", false
+	}
+
+	return id, true
 }
