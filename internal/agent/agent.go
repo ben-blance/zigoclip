@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"zigoclip/internal/discovery"
+	"zigoclip/internal/imagecodec"
 	"zigoclip/internal/ipc"
 	"zigoclip/internal/network"
 	"zigoclip/internal/protocol"
@@ -81,20 +82,45 @@ func (a *Agent) considerPeer(peerID, address string) {
 }
 
 // handleLocalChange fires when Zig reports the local Windows clipboard
-// changed. It tags the change with a fresh event ID, marks that ID
-// seen (so an echo from a peer is later ignored), and broadcasts it.
-func (a *Agent) handleLocalChange(text string) {
-	log.Printf("Clipboard changed: %q", text)
+// changed. format/data are what Zig read straight off the clipboard:
+// raw text, or a raw CF_DIB blob for images. It tags the change with
+// a fresh event ID, marks that ID seen (so an echo from a peer is
+// later ignored), and broadcasts it.
+func (a *Agent) handleLocalChange(format string, data []byte) {
+	payload := data
+
+	if format == protocol.FormatImage {
+		log.Printf("Clipboard changed: image (%d bytes DIB)", len(data))
+
+		img, err := imagecodec.DecodeDIB(data)
+		if err != nil {
+			log.Printf("Failed to decode clipboard image: %v", err)
+			return
+		}
+
+		png, err := imagecodec.EncodePNG(img)
+		if err != nil {
+			log.Printf("Failed to PNG-encode clipboard image: %v", err)
+			return
+		}
+
+		log.Printf("Encoded to %d bytes PNG for transfer", len(png))
+
+		payload = png
+	} else {
+		log.Printf("Clipboard changed: %q", string(data))
+	}
 
 	eventID := fmt.Sprintf("%s-%d", a.deviceID, time.Now().UnixNano())
 
 	a.tracker.MarkSeen(eventID)
 
-	a.net.Broadcast(protocol.New(a.deviceID, eventID, text))
+	a.net.Broadcast(protocol.New(a.deviceID, eventID, format, payload))
 }
 
 // handleRemoteMessage fires when a peer sends us a clipboard update
-// over TCP.
+// over TCP. Image payloads arrive as PNG and are converted back to a
+// raw CF_DIB blob before being handed to Zig.
 func (a *Agent) handleRemoteMessage(msg protocol.Message) {
 	if a.tracker.MarkSeen(msg.EventID) {
 		log.Printf("Ignoring already-seen event %s", msg.EventID)
@@ -105,7 +131,25 @@ func (a *Agent) handleRemoteMessage(msg protocol.Message) {
 		return
 	}
 
-	if err := a.zig.SetClipboard(msg.Payload); err != nil {
+	payload := msg.Payload
+
+	if msg.ClipboardFormat == protocol.FormatImage {
+		img, err := imagecodec.DecodePNG(payload)
+		if err != nil {
+			log.Printf("Failed to decode PNG from peer: %v", err)
+			return
+		}
+
+		dib, err := imagecodec.EncodeDIB(img)
+		if err != nil {
+			log.Printf("Failed to encode image for clipboard: %v", err)
+			return
+		}
+
+		payload = dib
+	}
+
+	if err := a.zig.SetClipboard(msg.ClipboardFormat, payload); err != nil {
 		log.Printf("Failed to set clipboard: %v", err)
 	}
 

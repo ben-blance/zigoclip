@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"sync"
@@ -17,7 +18,8 @@ import (
 
 const dialTimeout = 2 * time.Second
 
-// OnMessage is invoked for every message received from a peer.
+// OnMessage is invoked for every message received from a peer, with
+// msg.Payload already fully read.
 type OnMessage func(msg protocol.Message)
 
 type Server struct {
@@ -84,22 +86,32 @@ func (s *Server) Connect(address string) {
 	go s.handleConnection(conn)
 }
 
-// Broadcast sends msg to every connected peer.
+// Broadcast sends msg to every connected peer: a JSON header line
+// (everything except Payload) immediately followed by the raw
+// payload bytes. No base64 — large binary payloads (images) go out
+// as-is.
 func (s *Server) Broadcast(msg protocol.Message) {
-	data, err := json.Marshal(msg)
+	msg.PayloadSize = len(msg.Payload)
+
+	header, err := json.Marshal(msg)
 	if err != nil {
 		log.Printf("JSON error: %v", err)
 		return
 	}
 
-	data = append(data, '\n')
+	header = append(header, '\n')
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	for conn := range s.connections {
-		if _, err := conn.Write(data); err != nil {
+		if _, err := conn.Write(header); err != nil {
 			log.Printf("Failed to send to %s: %v", conn.RemoteAddr(), err)
+			continue
+		}
+
+		if _, err := conn.Write(msg.Payload); err != nil {
+			log.Printf("Failed to send payload to %s: %v", conn.RemoteAddr(), err)
 		}
 	}
 }
@@ -110,19 +122,40 @@ func (s *Server) handleConnection(conn net.Conn) {
 		conn.Close()
 	}()
 
-	scanner := bufio.NewScanner(conn)
+	reader := bufio.NewReader(conn)
 
-	for scanner.Scan() {
-		var msg protocol.Message
-
-		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
-			log.Printf("Invalid message: %v", err)
-			continue
+	for {
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			return
 		}
 
+		var msg protocol.Message
+
+		if err := json.Unmarshal(line, &msg); err != nil {
+			// The stream is now desynced — we don't know where the
+			// next header starts — so we can't just continue.
+			log.Printf("Invalid message header, dropping connection: %v", err)
+			return
+		}
+
+		if msg.PayloadSize < 0 || msg.PayloadSize > protocol.MaxPayloadSize {
+			log.Printf("Rejecting message with payload_size=%d", msg.PayloadSize)
+			return
+		}
+
+		payload := make([]byte, msg.PayloadSize)
+
+		if _, err := io.ReadFull(reader, payload); err != nil {
+			log.Printf("Failed to read payload: %v", err)
+			return
+		}
+
+		msg.Payload = payload
+
 		log.Printf(
-			"Received event=%s origin=%s payload=%q",
-			msg.EventID, msg.DeviceID, msg.Payload,
+			"Received event=%s origin=%s format=%s bytes=%d",
+			msg.EventID, msg.DeviceID, msg.ClipboardFormat, len(payload),
 		)
 
 		s.onMessage(msg)

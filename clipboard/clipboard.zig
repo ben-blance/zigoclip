@@ -14,6 +14,10 @@ fn writeStdout(data: []const u8) !void {
     try stdout.writeAll(data);
 }
 
+// ---------------------------------------------------------------------
+// Text (CF_UNICODETEXT)
+// ---------------------------------------------------------------------
+
 fn writeClipboardText(text: []const u8) !void {
     if (win.OpenClipboard(null) == 0) {
         return error.OpenClipboardFailed;
@@ -25,6 +29,7 @@ fn writeClipboardText(text: []const u8) !void {
         return error.EmptyClipboardFailed;
     }
 
+    // UTF-8 -> UTF-16
     const wide_len = win.MultiByteToWideChar(
         win.CP_UTF8,
         0,
@@ -148,101 +153,176 @@ fn readClipboardText(
     return result[0..utf8_len];
 }
 
-fn sendClipboardEvent(
-    text: []const u8,
-) !void {
-    const allocator =
-        std.heap.page_allocator;
+// ---------------------------------------------------------------------
+// Image (CF_DIB) — raw passthrough. Zig never decodes pixels; it just
+// relays the exact bytes Windows itself uses for CF_DIB
+// (BITMAPINFOHEADER + pixel data). Go owns turning that into/from PNG
+// for the network hop.
+// ---------------------------------------------------------------------
 
-    const encoded_len =
-        std.base64.standard.Encoder.calcSize(
-            text.len,
-        );
+fn readClipboardImage(
+    allocator: std.mem.Allocator,
+) ![]u8 {
+    if (win.OpenClipboard(null) == 0) {
+        return error.OpenClipboardFailed;
+    }
 
-    const encoded =
-        try allocator.alloc(
-            u8,
-            encoded_len,
-        );
+    defer _ = win.CloseClipboard();
 
-    defer allocator.free(encoded);
+    const handle = win.GetClipboardData(win.CF_DIB);
 
-    _ = std.base64.standard.Encoder.encode(
-        encoded,
-        text,
-    );
+    if (handle == null) {
+        return error.NoImageClipboard;
+    }
 
-    try writeStdout("CLIPBOARD ");
-    try writeStdout(encoded);
-    try writeStdout("\n");
+    const size: usize = @intCast(win.GlobalSize(handle));
+
+    if (size == 0) {
+        return error.GlobalSizeFailed;
+    }
+
+    const ptr = win.GlobalLock(handle);
+
+    if (ptr == null) {
+        return error.GlobalLockFailed;
+    }
+
+    defer _ = win.GlobalUnlock(handle);
+
+    const src: [*]const u8 = @ptrCast(ptr);
+
+    const result = try allocator.alloc(u8, size);
+
+    @memcpy(result, src[0..size]);
+
+    return result;
 }
 
-fn processCommand(
-    line: []const u8,
+fn writeClipboardImage(data: []const u8) !void {
+    if (win.OpenClipboard(null) == 0) {
+        return error.OpenClipboardFailed;
+    }
+
+    defer _ = win.CloseClipboard();
+
+    if (win.EmptyClipboard() == 0) {
+        return error.EmptyClipboardFailed;
+    }
+
+    const hmem = win.GlobalAlloc(
+        win.GMEM_MOVEABLE,
+        data.len,
+    );
+
+    if (hmem == null) {
+        return error.GlobalAllocFailed;
+    }
+
+    const ptr = win.GlobalLock(hmem);
+
+    if (ptr == null) {
+        _ = win.GlobalFree(hmem);
+        return error.GlobalLockFailed;
+    }
+
+    const dest: [*]u8 = @ptrCast(ptr);
+
+    @memcpy(dest[0..data.len], data);
+
+    _ = win.GlobalUnlock(hmem);
+
+    if (win.SetClipboardData(
+        win.CF_DIB,
+        hmem,
+    ) == null) {
+        _ = win.GlobalFree(hmem);
+        return error.SetClipboardFailed;
+    }
+}
+
+// ---------------------------------------------------------------------
+// IPC framing: "<TAG> <format> <size>\n" followed by exactly <size>
+// raw bytes — no base64. format is "text" or "image", matching Go's
+// protocol.FormatText / protocol.FormatImage exactly (case matters:
+// Go compares these strings directly).
+// ---------------------------------------------------------------------
+
+fn sendClipboardEvent(
+    format: []const u8,
+    data: []const u8,
 ) !void {
+    var header_buf: [64]u8 = undefined;
+
+    const header = try std.fmt.bufPrint(
+        &header_buf,
+        "CLIPBOARD {s} {d}\n",
+        .{ format, data.len },
+    );
+
+    try writeStdout(header);
+    try writeStdout(data);
+}
+
+fn processCommand(line: []const u8, stdin: anytype) !void {
     const prefix = "SET ";
 
-    if (!std.mem.startsWith(
-        u8,
-        line,
-        prefix,
-    )) {
+    if (!std.mem.startsWith(u8, line, prefix)) {
         return;
     }
 
-    const encoded =
-        line[prefix.len..];
+    var it = std.mem.splitScalar(u8, line[prefix.len..], ' ');
 
-    const allocator =
-        std.heap.page_allocator;
+    const format = it.next() orelse return error.MalformedSetCommand;
+    const size_str = it.next() orelse return error.MalformedSetCommand;
+    const size = try std.fmt.parseInt(usize, size_str, 10);
 
-    const decoded_len =
-        try std.base64.standard.Decoder.calcSizeForSlice(
-            encoded,
-        );
+    const allocator = std.heap.page_allocator;
 
-    const decoded =
-        try allocator.alloc(
-            u8,
-            decoded_len,
-        );
+    const data = try allocator.alloc(u8, size);
+    defer allocator.free(data);
 
-    defer allocator.free(decoded);
+    try stdin.readNoEof(data);
 
-    try std.base64.standard.Decoder.decode(
-        decoded,
-        encoded,
-    );
-
+    // Tell the clipboard watcher that the next clipboard change is
+    // caused by us, so it isn't echoed back out over the network.
     suppress_next_change.store(
         true,
         .seq_cst,
     );
 
-    try writeClipboardText(decoded);
+    if (std.mem.eql(u8, format, "image")) {
+        try writeClipboardImage(data);
+    } else {
+        try writeClipboardText(data);
+    }
 }
 
 fn stdinThread() void {
     var stdin = std.io.getStdIn().reader();
 
-    var buffer: [8192]u8 = undefined;
+    var header_buf: [256]u8 = undefined;
 
     while (true) {
-        const line =
-            stdin.readUntilDelimiterOrEof(
-                &buffer,
-                '\n',
-            ) catch {
-                return;
-            };
+        const line = stdin.readUntilDelimiterOrEof(
+            &header_buf,
+            '\n',
+        ) catch {
+            return;
+        };
 
         if (line == null) {
             return;
         }
 
-        processCommand(line.?) catch {};
+        processCommand(line.?, stdin) catch |err| {
+            std.debug.print("SET command failed: {}\n", .{err});
+        };
     }
 }
+
+// ---------------------------------------------------------------------
+// Clipboard change notification (event-driven, no polling)
+// ---------------------------------------------------------------------
 
 // wndProc handles messages for our hidden listener window. The only
 // one we care about is WM_CLIPBOARDUPDATE, delivered the instant the
@@ -263,13 +343,23 @@ fn wndProc(
             return 0;
         }
 
-        if (readClipboardText(
-            std.heap.page_allocator,
-        )) |text| {
-            defer std.heap.page_allocator.free(text);
+        const allocator = std.heap.page_allocator;
 
-            sendClipboardEvent(text) catch {};
-        } else |_| {}
+        // A copied image exposes CF_DIB; check that first, then fall
+        // back to text. Anything else (files, RTF, etc.) is ignored.
+        if (win.IsClipboardFormatAvailable(win.CF_DIB) != 0) {
+            if (readClipboardImage(allocator)) |data| {
+                defer allocator.free(data);
+
+                sendClipboardEvent("image", data) catch {};
+            } else |_| {}
+        } else if (win.IsClipboardFormatAvailable(win.CF_UNICODETEXT) != 0) {
+            if (readClipboardText(allocator)) |text| {
+                defer allocator.free(text);
+
+                sendClipboardEvent("text", text) catch {};
+            } else |_| {}
+        }
 
         return 0;
     }
