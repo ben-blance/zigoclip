@@ -9,6 +9,13 @@ GO_BIN=zigoclip.exe
 
 .PHONY: all build zig go clean run-a run-b
 
+ifeq ($(OS),Windows_NT)
+SHELL := cmd.exe
+RM_CMD = del /Q
+else
+RM_CMD = rm -f
+endif
+
 all: build
 
 build: zig go
@@ -23,10 +30,10 @@ go:
 	$(GO) build -o $(GO_BIN) $(GO_SRC)
 
 clean:
-	-del /Q $(ZIG_BIN) 2>nul
-	-del /Q $(GO_BIN) 2>nul
-	-del /Q clipboard.exe.obj 2>nul
-	-del /Q clipboard.pdb 2>nul
+	@if exist "$(ZIG_BIN)" del /Q "$(ZIG_BIN)"
+	@if exist "$(GO_BIN)" del /Q "$(GO_BIN)"
+	@if exist "clipboard.exe.obj" del /Q "clipboard.exe.obj"
+	@if exist "clipboard.pdb" del /Q "clipboard.pdb"
 
 run-a: build
 	.\$(GO_BIN) -name client-a
