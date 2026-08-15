@@ -1,4 +1,7 @@
-# Zigoclip
+
+<div align="center">
+  <img width="500" height="500" alt="1shot__5_-removebg-preview" src="https://github.com/user-attachments/assets/b6ce73a1-3e66-4e63-bcae-218d52c44c78" />
+</div>
 
 **A lightweight peer-to-peer clipboard synchronization tool for Windows, built with Go and Zig.**
 
@@ -27,7 +30,6 @@ Copy something on one device, and it becomes available on the other device autom
 
 > **Status:** 🚧 Active development
 > **Current platform:** Windows
-> **Current clipboard support:** Text
 
 ---
 
@@ -45,15 +47,16 @@ Copy something on one device, and it becomes available on the other device autom
 * 🛑 Clipboard synchronization loop prevention
 * 🧩 Go + Zig architecture
 * 🏗️ Production-oriented project structure
+* 🖼️ Image clipboard synchronization
+* 📦 Efficient binary clipboard transfers
 
 ### Planned
 
-* 🖼️ Image clipboard synchronization
-* 📦 Efficient binary clipboard transfers
+
 * 🔌 Connection recovery and reconnection
 * 🔐 Device pairing and authentication
 * 🔒 Encryption
-* 💻 Support for multiple devices
+* 💻 Support for multiple devices (UNIX)
 * 🪟 Windows background/tray application
 
 ---
@@ -319,61 +322,6 @@ This allows image synchronization to be added without redesigning the entire net
 
 ---
 
-# 🏗️ Project Structure
-
-```text
-zigoclip/
-│
-├── clipboard/
-│   └── clipboard.zig
-│
-├── cmd/
-│   └── zigoclip/
-│       └── main.go
-│
-├── internal/
-│   ├── agent/
-│   │   └── agent.go
-│   │
-│   ├── discovery/
-│   │   └── udp.go
-│   │
-│   ├── ipc/
-│   │   └── pipe.go
-│   │
-│   ├── network/
-│   │   └── tcp.go
-│   │
-│   ├── protocol/
-│   │   └── message.go
-│   │
-│   └── sync/
-│       └── sync.go
-│
-├── prototype/
-│
-├── Makefile
-├── go.mod
-├── go.sum
-└── .gitignore
-```
-
-### Components
-
-| Component             | Responsibility                               |
-| --------------------- | -------------------------------------------- |
-| `clipboard/`          | Windows clipboard implementation in Zig      |
-| `cmd/zigoclip/`       | Application entry point                      |
-| `internal/agent/`     | Coordinates the application                  |
-| `internal/discovery/` | UDP peer discovery                           |
-| `internal/ipc/`       | Go ↔ Zig communication                       |
-| `internal/network/`   | TCP communication                            |
-| `internal/protocol/`  | Clipboard message definitions                |
-| `internal/sync/`      | Clipboard synchronization and event handling |
-| `prototype/`          | Early prototype implementation               |
-
----
-
 # 🛠️ Tech Stack
 
 | Technology    | Purpose                                |
@@ -385,8 +333,6 @@ zigoclip/
 | **Win32 API** | Windows clipboard and event handling   |
 
 ---
-
-# 🚀 Development
 
 ## Requirements
 
@@ -443,58 +389,6 @@ mingw32-make run-b
 Both devices should be connected to the same local network.
 
 Once the devices discover each other, clipboard synchronization happens automatically.
-
----
-
-# 🧪 Current Scope
-
-The initial version intentionally keeps the scope small:
-
-```text
-Platform       Windows
-Network        Same local network
-Devices        Two
-Discovery      UDP
-Transport      TCP
-Clipboard      Text
-Architecture   Go + Zig
-```
-
-Features such as encryption, authentication, cloud synchronization, and cross-platform support are intentionally outside the current scope.
-
----
-
-# 🗺️ Roadmap
-
-### V0.1 — Local Text Clipboard
-
-* [x] Windows clipboard integration
-* [x] Zig clipboard handler
-* [x] Go networking layer
-* [x] UDP discovery
-* [x] TCP peer connection
-* [x] Bidirectional text synchronization
-* [x] Event IDs
-* [x] Loop prevention
-* [x] Duplicate connection prevention
-* [x] Event-driven clipboard monitoring
-
-### V0.2 — Rich Clipboard
-
-* [ ] Image clipboard support
-* [ ] Binary payload transfer
-* [ ] Large clipboard payload handling
-* [ ] Better transfer/error handling
-
-### Future
-
-* [ ] Multiple devices
-* [ ] Device pairing
-* [ ] Authentication
-* [ ] Encryption
-* [ ] Connection recovery
-* [ ] Windows tray application
-* [ ] Cross-platform support
 
 ---
 
