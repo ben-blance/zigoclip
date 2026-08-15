@@ -7,8 +7,6 @@ const win = @cImport({
     @cInclude("windows.h");
 });
 
-const SLEEP_MS = 250;
-
 var suppress_next_change = std.atomic.Value(bool).init(false);
 
 fn writeStdout(data: []const u8) !void {
@@ -246,10 +244,40 @@ fn stdinThread() void {
     }
 }
 
-pub fn main() !void {
-    var last_sequence: u32 =
-        win.GetClipboardSequenceNumber();
+// wndProc handles messages for our hidden listener window. The only
+// one we care about is WM_CLIPBOARDUPDATE, delivered the instant the
+// clipboard changes — no polling required.
+fn wndProc(
+    hwnd: win.HWND,
+    msg: win.UINT,
+    wparam: win.WPARAM,
+    lparam: win.LPARAM,
+) callconv(.C) win.LRESULT {
+    if (msg == win.WM_CLIPBOARDUPDATE) {
+        // If this change came from our own remote SET command, don't
+        // send it back over the network.
+        if (suppress_next_change.swap(
+            false,
+            .seq_cst,
+        )) {
+            return 0;
+        }
 
+        if (readClipboardText(
+            std.heap.page_allocator,
+        )) |text| {
+            defer std.heap.page_allocator.free(text);
+
+            sendClipboardEvent(text) catch {};
+        } else |_| {}
+
+        return 0;
+    }
+
+    return win.DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+pub fn main() !void {
     try writeStdout("READY\n");
 
     const thread =
@@ -261,35 +289,53 @@ pub fn main() !void {
 
     thread.detach();
 
-    while (true) {
-        const sequence =
-            win.GetClipboardSequenceNumber();
+    const class_name =
+        std.unicode.utf8ToUtf16LeStringLiteral("ZigoclipListener");
 
-        if (sequence != last_sequence) {
-            last_sequence = sequence;
+    var wc = std.mem.zeroes(win.WNDCLASSEXW);
+    wc.cbSize = @sizeOf(win.WNDCLASSEXW);
+    wc.lpfnWndProc = wndProc;
+    wc.hInstance = win.GetModuleHandleW(null);
+    wc.lpszClassName = class_name;
 
-            if (suppress_next_change.swap(
-                false,
-                .seq_cst,
-            )) {
-                std.time.sleep(
-                    SLEEP_MS * std.time.ns_per_ms,
-                );
+    if (win.RegisterClassExW(&wc) == 0) {
+        return error.RegisterClassFailed;
+    }
 
-                continue;
-            }
+    // Passing null (rather than HWND_MESSAGE) sidesteps a Zig 0.13
+    // cimport bug casting that sentinel constant. This just creates an
+    // ordinary top-level window instead of a message-only one — since
+    // we never call ShowWindow, it's never actually shown, and it
+    // still receives WM_CLIPBOARDUPDATE the same way.
+    const hwnd = win.CreateWindowExW(
+        0,
+        class_name,
+        class_name,
+        0,
+        0,
+        0,
+        0,
+        0,
+        null,
+        null,
+        wc.hInstance,
+        null,
+    );
 
-            if (readClipboardText(
-                std.heap.page_allocator,
-            )) |text| {
-                defer std.heap.page_allocator.free(text);
+    if (hwnd == null) {
+        return error.CreateWindowFailed;
+    }
 
-                sendClipboardEvent(text) catch {};
-            } else |_| {}
-        }
+    if (win.AddClipboardFormatListener(hwnd) == 0) {
+        return error.AddClipboardListenerFailed;
+    }
 
-        std.time.sleep(
-            SLEEP_MS * std.time.ns_per_ms,
-        );
+    // Blocks until a message arrives — no busy-waiting, no polling
+    // interval, and updates are handled the instant they happen.
+    var msg: win.MSG = undefined;
+
+    while (win.GetMessageW(&msg, null, 0, 0) > 0) {
+        _ = win.TranslateMessage(&msg);
+        _ = win.DispatchMessageW(&msg);
     }
 }

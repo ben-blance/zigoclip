@@ -45,7 +45,7 @@ func New(name string) (*Agent, error) {
 	}
 
 	a.net = network.NewServer(tcpPort, a.handleRemoteMessage)
-	a.discovery = discovery.New(udpPort, tcpPort, deviceID, a.net.Connect)
+	a.discovery = discovery.New(udpPort, tcpPort, deviceID, a.considerPeer)
 
 	return a, nil
 }
@@ -65,6 +65,19 @@ func (a *Agent) Run() {
 	go a.zig.Watch(a.handleLocalChange)
 
 	select {}
+}
+
+// considerPeer decides whether to dial a discovered peer. Both devices
+// see each other's discovery broadcasts, so without a tie-break both
+// would dial out and we'd end up with two TCP connections per pair.
+// Only the lexicographically smaller device ID dials; the other side
+// just waits to accept that connection.
+func (a *Agent) considerPeer(peerID, address string) {
+	if a.deviceID > peerID {
+		return
+	}
+
+	a.net.Connect(address)
 }
 
 // handleLocalChange fires when Zig reports the local Windows clipboard
