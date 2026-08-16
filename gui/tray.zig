@@ -3,12 +3,12 @@
 // Zig 0.13 / MinGW / native Win32.
 //
 // UI target:
-//   - dark desktop-style settings window
-//   - blue title bar
-//   - green Zigoclip accent
-//   - large "Launch on Windows startup" toggle
-//   - "Manage access" link
-//   - GitHub source-code card
+//   - compact dark-mode settings panel with a cyan accent
+//   - flat borderless custom title bar (minimize + close only)
+//   - "Launch on Windows startup" row with toggle
+//   - "Manage access" row styled and behaving like a real button
+//   - GitHub source-code card using the bundled github.ico
+//   - hover feedback everywhere something is clickable
 //
 // Runtime responsibilities:
 //   - launch zigoclip.exe
@@ -17,6 +17,11 @@
 //   - provide a system tray icon
 //   - provide Start with Windows
 //   - open Access Management
+//
+// Expected layout on disk (assets sit next to the built exe):
+//
+//   tray.exe
+//   assets/github.ico
 //
 // Build:
 //   zig build-exe gui/tray.zig -lc -luser32 -lshell32 -ladvapi32 -lgdi32 --subsystem windows -femit-bin=tray.exe
@@ -56,39 +61,51 @@ const RUN_VALUE_NAME = "Zigoclip";
 // =====================================================================
 // Custom window constants
 // =====================================================================
+//
+// This is a small settings popover, not an application window — sized
+// to fit exactly what it contains and nothing more.
+//
 
-const WINDOW_WIDTH = 1240;
-const WINDOW_HEIGHT = 700;
-const TITLEBAR_HEIGHT = 64;
+const WINDOW_WIDTH = 420;
+const WINDOW_HEIGHT = 312;
+const TITLEBAR_HEIGHT = 44;
+const CORNER_RADIUS = 16;
 
-// Custom title-bar button rectangles.
-const TITLE_MIN_LEFT = 1035;
-const TITLE_MIN_RIGHT = 1090;
+const PAD = 20;
 
-const TITLE_MAX_LEFT = 1090;
-const TITLE_MAX_RIGHT = 1145;
+// Title-bar buttons (minimize + close only).
+const TITLE_MIN_RIGHT = WINDOW_WIDTH - 40;
+const TITLE_MIN_LEFT = TITLE_MIN_RIGHT - 40;
 
-const TITLE_CLOSE_LEFT = 1145;
-const TITLE_CLOSE_RIGHT = 1240;
+const TITLE_CLOSE_LEFT = WINDOW_WIDTH - 40;
+const TITLE_CLOSE_RIGHT = WINDOW_WIDTH;
 
-// Main UI rectangles.
-const TOGGLE_LEFT = 985;
-const TOGGLE_TOP = 142;
-const TOGGLE_RIGHT = 1150;
-const TOGGLE_BOTTOM = 194;
+// Startup toggle.
+const TOGGLE_W = 44;
+const TOGGLE_H = 22;
+const TOGGLE_RIGHT = WINDOW_WIDTH - PAD;
+const TOGGLE_LEFT = TOGGLE_RIGHT - TOGGLE_W;
+const TOGGLE_TOP = 64;
+const TOGGLE_BOTTOM = TOGGLE_TOP + TOGGLE_H;
 
-const ACCESS_LEFT = 70;
-const ACCESS_TOP = 270;
-const ACCESS_RIGHT = 400;
-const ACCESS_BOTTOM = 315;
+const DIVIDER_Y = 110;
 
-const CARD_LEFT = 70;
-const CARD_TOP = 350;
-const CARD_RIGHT = 1170;
-const CARD_BOTTOM = 454;
+// "Manage access" row — a real button-looking row, not a floating link.
+const ACCESS_ROW_LEFT = PAD;
+const ACCESS_ROW_RIGHT = WINDOW_WIDTH - PAD;
+const ACCESS_ROW_TOP = 126;
+const ACCESS_ROW_BOTTOM = ACCESS_ROW_TOP + 46;
+
+// GitHub source card.
+const CARD_LEFT = PAD;
+const CARD_RIGHT = WINDOW_WIDTH - PAD;
+const CARD_TOP = 188;
+const CARD_BOTTOM = CARD_TOP + 60;
+
+const GITHUB_ICON_SIZE = 28;
 
 // =====================================================================
-// Colors
+// Colors — dark mode with a cyan accent
 // =====================================================================
 //
 // COLORREF is encoded as 0x00BBGGRR.
@@ -100,20 +117,21 @@ fn rgb(r: u8, g: u8, b: u8) win.DWORD {
         (@as(win.DWORD, b) << 16);
 }
 
-const COLOR_BG = rgb(12, 18, 21);
-const COLOR_BG_2 = rgb(15, 23, 26);
-const COLOR_BLUE = rgb(45, 105, 201);
-const COLOR_BLUE_DARK = rgb(35, 82, 160);
-const COLOR_GREEN = rgb(135, 210, 77);
-const COLOR_GREEN_DARK = rgb(105, 170, 59);
-const COLOR_WHITE = rgb(245, 247, 249);
-const COLOR_TEXT = rgb(235, 239, 242);
-const COLOR_MUTED = rgb(145, 157, 164);
-const COLOR_CARD = rgb(20, 28, 31);
-const COLOR_CARD_HOVER = rgb(25, 35, 39);
-const COLOR_BORDER = rgb(59, 67, 70);
-const COLOR_OFF = rgb(70, 79, 83);
-const COLOR_KNOB = rgb(248, 249, 250);
+const COLOR_BG = rgb(10, 13, 15); // main body background
+const COLOR_BG_2 = rgb(15, 19, 22); // title bar background
+const COLOR_CYAN = rgb(34, 211, 238); // primary accent (cyan-400)
+const COLOR_CYAN_DARK = rgb(8, 120, 134); // dim accent / outer border
+const COLOR_WHITE = rgb(240, 245, 247);
+const COLOR_TEXT = rgb(222, 230, 233);
+const COLOR_MUTED = rgb(120, 134, 139);
+const COLOR_CARD = rgb(17, 22, 25);
+const COLOR_CARD_HOVER = rgb(24, 32, 36);
+const COLOR_BORDER = rgb(33, 41, 44);
+const COLOR_OFF = rgb(46, 54, 58);
+const COLOR_KNOB = rgb(235, 240, 242);
+const COLOR_TITLE_BTN_HOVER = rgb(28, 36, 40);
+const COLOR_CLOSE_HOVER_BG = rgb(64, 28, 28);
+const COLOR_CLOSE_HOVER_TEXT = rgb(235, 100, 100);
 
 // =====================================================================
 // Win32 compatibility bindings
@@ -128,9 +146,19 @@ const COLOR_KNOB = rgb(248, 249, 250);
 // IDI_APPLICATION:
 //     32512
 //
+// IDC_ARROW:
+//     32512
+//
+// IDC_HAND:
+//     32649
+//
 
 const HKEY_CURRENT_USER: usize = 0x80000001;
 const IDI_APPLICATION: usize = 32512;
+const IDC_ARROW: usize = 32512;
+const IDC_HAND: usize = 32649;
+
+const DI_NORMAL: win.UINT = 3;
 
 extern "advapi32" fn RegOpenKeyExW(
     hKey: usize,
@@ -148,6 +176,29 @@ extern "user32" fn LoadIconW(
     lpIconName: usize,
 ) callconv(.C) win.HICON;
 
+extern "user32" fn LoadCursorW(
+    hInstance: ?*anyopaque,
+    lpCursorName: usize,
+) callconv(.C) win.HCURSOR;
+
+extern "user32" fn LookupIconIdFromDirectoryEx(
+    presbits: [*]const u8,
+    fIcon: win.BOOL,
+    cxDesired: i32,
+    cyDesired: i32,
+    flags: win.UINT,
+) callconv(.C) i32;
+
+extern "user32" fn CreateIconFromResourceEx(
+    presbits: [*]const u8,
+    dwResSize: win.DWORD,
+    fIcon: win.BOOL,
+    dwVer: win.DWORD,
+    cxDesired: i32,
+    cyDesired: i32,
+    flags: win.UINT,
+) callconv(.C) win.HICON;
+
 // =====================================================================
 // Global state
 // =====================================================================
@@ -159,7 +210,21 @@ var job_object: ?win.HANDLE = null;
 
 var main_hwnd: ?win.HWND = null;
 
+var github_icon: ?win.HICON = null;
+
 var quit_requested = false;
+
+const HoverZone = enum {
+    none,
+    minimize,
+    close,
+    toggle,
+    access_row,
+    card,
+};
+
+var hover_zone: HoverZone = .none;
+var mouse_tracking = false;
 
 // =====================================================================
 // String helpers
@@ -199,6 +264,37 @@ fn pointInRect(
         x < right and
         y >= top and
         y < bottom;
+}
+
+// Single source of truth for "what is under the cursor". Used by
+// hover tracking, click handling, cursor selection, and title-bar
+// hit testing so all four stay perfectly in sync.
+fn hitZone(x: i32, y: i32) HoverZone {
+    if (y >= 0 and y < TITLEBAR_HEIGHT) {
+        if (pointInRect(x, y, TITLE_MIN_LEFT, 0, TITLE_MIN_RIGHT, TITLEBAR_HEIGHT)) {
+            return .minimize;
+        }
+
+        if (pointInRect(x, y, TITLE_CLOSE_LEFT, 0, TITLE_CLOSE_RIGHT, TITLEBAR_HEIGHT)) {
+            return .close;
+        }
+
+        return .none;
+    }
+
+    if (pointInRect(x, y, TOGGLE_LEFT - 8, TOGGLE_TOP - 8, TOGGLE_RIGHT + 8, TOGGLE_BOTTOM + 8)) {
+        return .toggle;
+    }
+
+    if (pointInRect(x, y, ACCESS_ROW_LEFT, ACCESS_ROW_TOP, ACCESS_ROW_RIGHT, ACCESS_ROW_BOTTOM)) {
+        return .access_row;
+    }
+
+    if (pointInRect(x, y, CARD_LEFT, CARD_TOP, CARD_RIGHT, CARD_BOTTOM)) {
+        return .card;
+    }
+
+    return .none;
 }
 
 // =====================================================================
@@ -311,7 +407,49 @@ fn computeExeDir(buf: []u16) []const u16 {
         }
     }
 
+    // Includes the trailing backslash.
     return buf[0..cut];
+}
+
+// =====================================================================
+// GitHub icon
+// =====================================================================
+
+// Compiled directly into the exe — no need to ship gui/assets alongside
+// tray.exe at runtime. Path is resolved at compile time relative to
+// this source file (gui/tray.zig), so it points at gui/assets/github.ico.
+const GITHUB_ICON_DATA = @embedFile("assets/github.ico");
+
+fn loadGithubIcon() void {
+    // A .ico file can bundle several sizes; ask Windows which one in
+    // the blob best matches the size we want, then materialize it.
+    const offset = LookupIconIdFromDirectoryEx(
+        GITHUB_ICON_DATA.ptr,
+        1, // TRUE: this is an icon, not a cursor
+        GITHUB_ICON_SIZE,
+        GITHUB_ICON_SIZE,
+        0,
+    );
+
+    if (offset <= 0) {
+        return;
+    }
+
+    const start: usize = @intCast(offset);
+
+    const icon = CreateIconFromResourceEx(
+        GITHUB_ICON_DATA[start..].ptr,
+        @intCast(GITHUB_ICON_DATA.len - start),
+        1, // TRUE: icon
+        0x00030000, // resource version 3.0
+        GITHUB_ICON_SIZE,
+        GITHUB_ICON_SIZE,
+        0,
+    );
+
+    if (icon != null) {
+        github_icon = icon;
+    }
 }
 
 // =====================================================================
@@ -700,6 +838,91 @@ fn fillEllipse(
     );
 }
 
+// A real diagonal X, drawn with a pen rather than approximated with
+// axis-aligned rectangles — used for the close button.
+fn drawXIcon(
+    hdc: win.HDC,
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    thickness: i32,
+    color: win.DWORD,
+) void {
+    const pen =
+        win.CreatePen(
+            0, // PS_SOLID
+            thickness,
+            color,
+        );
+
+    if (pen == null) {
+        return;
+    }
+
+    const old_pen =
+        win.SelectObject(
+            hdc,
+            @ptrCast(pen),
+        );
+
+    _ = win.MoveToEx(hdc, left, top, null);
+    _ = win.LineTo(hdc, right, bottom);
+
+    _ = win.MoveToEx(hdc, right, top, null);
+    _ = win.LineTo(hdc, left, bottom);
+
+    _ = win.SelectObject(
+        hdc,
+        old_pen,
+    );
+
+    _ = win.DeleteObject(
+        @ptrCast(pen),
+    );
+}
+
+// A ">" chevron drawn as a single two-segment polyline — used to mark
+// rows as navigable/clickable instead of a plain ">" character.
+fn drawChevronRight(
+    hdc: win.HDC,
+    cx: i32,
+    cy: i32,
+    size: i32,
+    thickness: i32,
+    color: win.DWORD,
+) void {
+    const pen =
+        win.CreatePen(
+            0, // PS_SOLID
+            thickness,
+            color,
+        );
+
+    if (pen == null) {
+        return;
+    }
+
+    const old_pen =
+        win.SelectObject(
+            hdc,
+            @ptrCast(pen),
+        );
+
+    _ = win.MoveToEx(hdc, cx - @divTrunc(size, 2), cy - size, null);
+    _ = win.LineTo(hdc, cx + @divTrunc(size, 2), cy);
+    _ = win.LineTo(hdc, cx - @divTrunc(size, 2), cy + size);
+
+    _ = win.SelectObject(
+        hdc,
+        old_pen,
+    );
+
+    _ = win.DeleteObject(
+        @ptrCast(pen),
+    );
+}
+
 // =====================================================================
 // Text drawing
 // =====================================================================
@@ -774,25 +997,25 @@ fn drawLogo(
     x: i32,
     y: i32,
 ) void {
-    const c = COLOR_GREEN;
+    const c = COLOR_CYAN;
 
-    // Dashed rounded-square approximation.
+    // Dashed rounded-square approximation, 24x24.
     //
     // Top.
-    fillRoundRect(hdc, x + 5, y, x + 18, y + 4, 2, c);
-    fillRoundRect(hdc, x + 24, y, x + 37, y + 4, 2, c);
+    fillRoundRect(hdc, x + 3, y, x + 10, y + 2, 1, c);
+    fillRoundRect(hdc, x + 14, y, x + 21, y + 2, 1, c);
 
     // Bottom.
-    fillRoundRect(hdc, x + 5, y + 36, x + 18, y + 40, 2, c);
-    fillRoundRect(hdc, x + 24, y + 36, x + 37, y + 40, 2, c);
+    fillRoundRect(hdc, x + 3, y + 22, x + 10, y + 24, 1, c);
+    fillRoundRect(hdc, x + 14, y + 22, x + 21, y + 24, 1, c);
 
     // Left.
-    fillRoundRect(hdc, x, y + 5, x + 4, y + 17, 2, c);
-    fillRoundRect(hdc, x, y + 23, x + 4, y + 35, 2, c);
+    fillRoundRect(hdc, x, y + 3, x + 2, y + 10, 1, c);
+    fillRoundRect(hdc, x, y + 14, x + 2, y + 21, 1, c);
 
     // Right.
-    fillRoundRect(hdc, x + 38, y + 5, x + 42, y + 17, 2, c);
-    fillRoundRect(hdc, x + 38, y + 23, x + 42, y + 35, 2, c);
+    fillRoundRect(hdc, x + 22, y + 3, x + 24, y + 10, 1, c);
+    fillRoundRect(hdc, x + 22, y + 14, x + 24, y + 21, 1, c);
 }
 
 // =====================================================================
@@ -817,7 +1040,7 @@ fn paintWindow(
         client.bottom - client.top;
 
     // ---------------------------------------------------------------
-    // Entire background / border
+    // Outer 1px accent border, dark body fill
     // ---------------------------------------------------------------
 
     fillRect(
@@ -826,16 +1049,15 @@ fn paintWindow(
         0,
         width,
         height,
-        COLOR_BLUE,
+        COLOR_CYAN_DARK,
     );
 
-    // Inner body.
     fillRect(
         hdc,
-        2,
-        TITLEBAR_HEIGHT,
-        width - 2,
-        height - 2,
+        1,
+        1,
+        width - 1,
+        height - 1,
         COLOR_BG,
     );
 
@@ -845,162 +1067,115 @@ fn paintWindow(
 
     fillRect(
         hdc,
-        2,
-        2,
-        width - 2,
+        1,
+        1,
+        width - 1,
         TITLEBAR_HEIGHT,
-        COLOR_BLUE,
+        COLOR_BG_2,
+    );
+
+    fillRect(
+        hdc,
+        1,
+        TITLEBAR_HEIGHT,
+        width - 1,
+        TITLEBAR_HEIGHT + 1,
+        COLOR_BORDER,
     );
 
     drawLogo(
         hdc,
-        30,
-        12,
+        16,
+        (TITLEBAR_HEIGHT - 24) >> 1,
     );
 
     drawText(
         hdc,
         wide("Zigoclip"),
-        92,
-        17,
-        28,
-        400,
+        48,
+        13,
+        15,
+        500,
         COLOR_WHITE,
     );
 
     // ---------------------------------------------------------------
-    // Window controls
+    // Window controls — Minimize + Close only, with hover feedback
     // ---------------------------------------------------------------
 
-    // Minimize.
-    fillRect(
-        hdc,
-        TITLE_MIN_LEFT + 18,
-        31,
-        TITLE_MIN_LEFT + 42,
-        33,
-        COLOR_WHITE,
-    );
-
-    // Maximize / restore.
-    if (win.IsZoomed(hwnd) != 0) {
-        // Restore icon.
-        fillRect(
+    if (hover_zone == .minimize) {
+        fillRoundRect(
             hdc,
-            TITLE_MAX_LEFT + 17,
-            24,
-            TITLE_MAX_LEFT + 37,
-            26,
-            COLOR_WHITE,
-        );
-
-        fillRect(
-            hdc,
-            TITLE_MAX_LEFT + 17,
-            26,
-            TITLE_MAX_LEFT + 19,
-            42,
-            COLOR_WHITE,
-        );
-
-        fillRect(
-            hdc,
-            TITLE_MAX_LEFT + 35,
-            26,
-            TITLE_MAX_LEFT + 37,
-            42,
-            COLOR_WHITE,
-        );
-
-        fillRect(
-            hdc,
-            TITLE_MAX_LEFT + 19,
-            40,
-            TITLE_MAX_LEFT + 35,
-            42,
-            COLOR_WHITE,
-        );
-    } else {
-        fillRect(
-            hdc,
-            TITLE_MAX_LEFT + 17,
-            23,
-            TITLE_MAX_LEFT + 38,
-            25,
-            COLOR_WHITE,
-        );
-
-        fillRect(
-            hdc,
-            TITLE_MAX_LEFT + 17,
-            23,
-            TITLE_MAX_LEFT + 19,
-            42,
-            COLOR_WHITE,
-        );
-
-        fillRect(
-            hdc,
-            TITLE_MAX_LEFT + 36,
-            23,
-            TITLE_MAX_LEFT + 38,
-            42,
-            COLOR_WHITE,
-        );
-
-        fillRect(
-            hdc,
-            TITLE_MAX_LEFT + 17,
-            40,
-            TITLE_MAX_LEFT + 38,
-            42,
-            COLOR_WHITE,
+            TITLE_MIN_LEFT + 4,
+            4,
+            TITLE_MIN_RIGHT - 4,
+            TITLEBAR_HEIGHT - 4,
+            6,
+            COLOR_TITLE_BTN_HOVER,
         );
     }
 
-    // Close X.
     fillRect(
         hdc,
-        TITLE_CLOSE_LEFT + 19,
-        20,
-        TITLE_CLOSE_LEFT + 22,
-        44,
-        COLOR_WHITE,
+        TITLE_MIN_LEFT + 13,
+        TITLEBAR_HEIGHT / 2 - 1,
+        TITLE_MIN_RIGHT - 13,
+        TITLEBAR_HEIGHT / 2 + 1,
+        COLOR_TEXT,
     );
 
-    fillRect(
+    if (hover_zone == .close) {
+        fillRoundRect(
+            hdc,
+            TITLE_CLOSE_LEFT + 4,
+            4,
+            TITLE_CLOSE_RIGHT - 4,
+            TITLEBAR_HEIGHT - 4,
+            6,
+            COLOR_CLOSE_HOVER_BG,
+        );
+    }
+
+    drawXIcon(
         hdc,
-        TITLE_CLOSE_LEFT + 38,
-        20,
-        TITLE_CLOSE_LEFT + 41,
-        44,
-        COLOR_WHITE,
+        TITLE_CLOSE_LEFT + 14,
+        TITLEBAR_HEIGHT / 2 - 6,
+        TITLE_CLOSE_RIGHT - 14,
+        TITLEBAR_HEIGHT / 2 + 6,
+        2,
+        if (hover_zone == .close) COLOR_CLOSE_HOVER_TEXT else COLOR_TEXT,
     );
 
     // ---------------------------------------------------------------
-    // Main heading
+    // Startup row
     // ---------------------------------------------------------------
 
     drawText(
         hdc,
-        wide("Launch on Windows startup"),
-        72,
-        138,
-        34,
-        700,
+        wide("Launch on startup"),
+        PAD,
+        60,
+        16,
+        600,
         COLOR_WHITE,
     );
 
-    // ---------------------------------------------------------------
-    // Startup toggle
-    // ---------------------------------------------------------------
+    drawText(
+        hdc,
+        wide("Starts automatically when you sign in."),
+        PAD,
+        84,
+        12,
+        400,
+        COLOR_MUTED,
+    );
 
     const startup_enabled =
         isAutostartEnabled();
 
     const toggle_color =
         if (startup_enabled)
-            COLOR_GREEN
+            COLOR_CYAN
         else
             COLOR_OFF;
 
@@ -1010,62 +1185,93 @@ fn paintWindow(
         TOGGLE_TOP,
         TOGGLE_RIGHT,
         TOGGLE_BOTTOM,
-        28,
+        TOGGLE_H >> 1,
         toggle_color,
     );
 
-    // Knob.
     if (startup_enabled) {
         fillEllipse(
             hdc,
-            TOGGLE_RIGHT - 50,
-            TOGGLE_TOP + 5,
-            TOGGLE_RIGHT - 5,
-            TOGGLE_BOTTOM - 5,
+            TOGGLE_RIGHT - 20,
+            TOGGLE_TOP + 3,
+            TOGGLE_RIGHT - 3,
+            TOGGLE_BOTTOM - 3,
             COLOR_KNOB,
         );
     } else {
         fillEllipse(
             hdc,
-            TOGGLE_LEFT + 5,
-            TOGGLE_TOP + 5,
-            TOGGLE_LEFT + 50,
-            TOGGLE_BOTTOM - 5,
+            TOGGLE_LEFT + 3,
+            TOGGLE_TOP + 3,
+            TOGGLE_LEFT + 20,
+            TOGGLE_BOTTOM - 3,
             COLOR_KNOB,
         );
     }
 
     // ---------------------------------------------------------------
-    // Manage access
+    // Divider
     // ---------------------------------------------------------------
+
+    fillRect(
+        hdc,
+        PAD,
+        DIVIDER_Y,
+        WINDOW_WIDTH - PAD,
+        DIVIDER_Y + 1,
+        COLOR_BORDER,
+    );
+
+    // ---------------------------------------------------------------
+    // "Manage access" row — now an actual button, not a floating link
+    // ---------------------------------------------------------------
+
+    const access_hovered = hover_zone == .access_row;
+
+    fillRoundRect(
+        hdc,
+        ACCESS_ROW_LEFT,
+        ACCESS_ROW_TOP,
+        ACCESS_ROW_RIGHT,
+        ACCESS_ROW_BOTTOM,
+        10,
+        if (access_hovered) COLOR_CARD_HOVER else COLOR_CARD,
+    );
+
+    frameRoundRect(
+        hdc,
+        ACCESS_ROW_LEFT,
+        ACCESS_ROW_TOP,
+        ACCESS_ROW_RIGHT,
+        ACCESS_ROW_BOTTOM,
+        10,
+        if (access_hovered) COLOR_CYAN_DARK else COLOR_BORDER,
+    );
 
     drawText(
         hdc,
         wide("Manage access"),
-        72,
-        268,
-        27,
-        500,
-        COLOR_GREEN,
+        ACCESS_ROW_LEFT + 16,
+        ACCESS_ROW_TOP + 14,
+        14,
+        600,
+        COLOR_TEXT,
     );
 
-    // Small arrow.
-    drawText(
+    drawChevronRight(
         hdc,
-        wide(">"),
-        280,
-        270,
-        24,
-        600,
-        COLOR_GREEN,
+        ACCESS_ROW_RIGHT - 20,
+        ACCESS_ROW_TOP + ((ACCESS_ROW_BOTTOM - ACCESS_ROW_TOP) >> 1),
+        5,
+        2,
+        if (access_hovered) COLOR_CYAN else COLOR_MUTED,
     );
 
     // ---------------------------------------------------------------
     // GitHub/source card
     // ---------------------------------------------------------------
 
-    const card_color =
-        COLOR_CARD;
+    const card_hovered = hover_zone == .card;
 
     fillRoundRect(
         hdc,
@@ -1073,8 +1279,8 @@ fn paintWindow(
         CARD_TOP,
         CARD_RIGHT,
         CARD_BOTTOM,
-        16,
-        card_color,
+        10,
+        if (card_hovered) COLOR_CARD_HOVER else COLOR_CARD,
     );
 
     frameRoundRect(
@@ -1083,51 +1289,63 @@ fn paintWindow(
         CARD_TOP,
         CARD_RIGHT,
         CARD_BOTTOM,
-        16,
-        COLOR_BORDER,
+        10,
+        if (card_hovered) COLOR_CYAN_DARK else COLOR_BORDER,
     );
 
-    // GitHub circle.
-    fillEllipse(
-        hdc,
-        CARD_LEFT + 28,
-        CARD_TOP + 24,
-        CARD_LEFT + 82,
-        CARD_TOP + 78,
-        COLOR_WHITE,
-    );
+    const icon_y = CARD_TOP + (((CARD_BOTTOM - CARD_TOP) - GITHUB_ICON_SIZE) >> 1);
+
+    if (github_icon) |icon| {
+        _ = win.DrawIconEx(
+            hdc,
+            CARD_LEFT + 16,
+            icon_y,
+            icon,
+            GITHUB_ICON_SIZE,
+            GITHUB_ICON_SIZE,
+            0,
+            null,
+            DI_NORMAL,
+        );
+    } else {
+        // Fallback placeholder if assets/github.ico wasn't found.
+        fillEllipse(
+            hdc,
+            CARD_LEFT + 16,
+            icon_y,
+            CARD_LEFT + 16 + GITHUB_ICON_SIZE,
+            icon_y + GITHUB_ICON_SIZE,
+            COLOR_WHITE,
+        );
+
+        drawText(
+            hdc,
+            wide("GH"),
+            CARD_LEFT + 22,
+            icon_y + 6,
+            11,
+            700,
+            COLOR_BG,
+        );
+    }
 
     drawText(
         hdc,
-        wide("GH"),
-        CARD_LEFT + 39,
-        CARD_TOP + 37,
-        15,
-        700,
-        COLOR_BG,
-    );
-
-    drawText(
-        hdc,
-        wide("Check out the source code on GitHub"),
-        CARD_LEFT + 122,
-        CARD_TOP + 32,
-        28,
-        400,
-        COLOR_GREEN,
-    );
-
-    // ---------------------------------------------------------------
-    // Small footer
-    // ---------------------------------------------------------------
-
-    drawText(
-        hdc,
-        wide("Zigoclip"),
-        72,
-        height - 45,
+        wide("View source on GitHub"),
+        CARD_LEFT + 16 + GITHUB_ICON_SIZE + 12,
+        CARD_TOP + 14,
         14,
-        500,
+        600,
+        if (card_hovered) COLOR_CYAN else COLOR_TEXT,
+    );
+
+    drawText(
+        hdc,
+        wide("Star it, file issues, or contribute"),
+        CARD_LEFT + 16 + GITHUB_ICON_SIZE + 12,
+        CARD_TOP + 34,
+        11,
+        400,
         COLOR_MUTED,
     );
 }
@@ -1138,7 +1356,9 @@ fn paintWindow(
 
 fn updateWindowRegion(hwnd: win.HWND) void {
     if (win.IsZoomed(hwnd) != 0) {
-        // No rounded corners when maximized.
+        // No rounded corners when maximized (shouldn't normally
+        // happen since the UI no longer exposes a maximize button,
+        // but Windows snap gestures can still trigger it).
         _ = win.SetWindowRgn(
             hwnd,
             null,
@@ -1171,8 +1391,8 @@ fn updateWindowRegion(hwnd: win.HWND) void {
             0,
             width + 1,
             height + 1,
-            24,
-            24,
+            CORNER_RADIUS,
+            CORNER_RADIUS,
         );
 
     if (region == null) {
@@ -1421,38 +1641,13 @@ fn handleNcHitTest(
     const y =
         screen_y - window_rect.top;
 
-    if (y >= 0 and
-        y < TITLEBAR_HEIGHT)
-    {
-        if (
-            pointInRect(
-                x,
-                y,
-                TITLE_MIN_LEFT,
-                0,
-                TITLE_MIN_RIGHT,
-                TITLEBAR_HEIGHT,
-            ) or
-            pointInRect(
-                x,
-                y,
-                TITLE_MAX_LEFT,
-                0,
-                TITLE_MAX_RIGHT,
-                TITLEBAR_HEIGHT,
-            ) or
-            pointInRect(
-                x,
-                y,
-                TITLE_CLOSE_LEFT,
-                0,
-                TITLE_CLOSE_RIGHT,
-                TITLEBAR_HEIGHT,
-            )
-        ) {
-            return 1; // HTCLIENT
-        }
+    const zone = hitZone(x, y);
 
+    if (zone == .minimize or zone == .close) {
+        return 1; // HTCLIENT
+    }
+
+    if (y >= 0 and y < TITLEBAR_HEIGHT) {
         return 2; // HTCAPTION
     }
 
@@ -1523,6 +1718,80 @@ fn wndProc(
         },
 
         // -------------------------------------------------------------
+        // Hover tracking — repaint whenever the hovered zone changes,
+        // and ask Windows for a WM_MOUSELEAVE once the cursor exits.
+        // -------------------------------------------------------------
+
+        win.WM_MOUSEMOVE => {
+            const x = signedLowWord(lparam);
+            const y = signedHighWord(lparam);
+
+            const zone = hitZone(x, y);
+
+            if (zone != hover_zone) {
+                hover_zone = zone;
+
+                _ = win.InvalidateRect(
+                    hwnd,
+                    null,
+                    0,
+                );
+            }
+
+            if (!mouse_tracking) {
+                var tme = std.mem.zeroes(win.TRACKMOUSEEVENT);
+                tme.cbSize = @sizeOf(win.TRACKMOUSEEVENT);
+                tme.dwFlags = win.TME_LEAVE;
+                tme.hwndTrack = hwnd;
+
+                _ = win.TrackMouseEvent(&tme);
+                mouse_tracking = true;
+            }
+
+            return 0;
+        },
+
+        win.WM_MOUSELEAVE => {
+            mouse_tracking = false;
+
+            if (hover_zone != .none) {
+                hover_zone = .none;
+
+                _ = win.InvalidateRect(
+                    hwnd,
+                    null,
+                    0,
+                );
+            }
+
+            return 0;
+        },
+
+        // -------------------------------------------------------------
+        // Show a hand cursor over anything clickable.
+        // -------------------------------------------------------------
+
+        win.WM_SETCURSOR => {
+            const hit_result: u16 =
+                @truncate(@as(usize, @bitCast(lparam)) & 0xFFFF);
+
+            if (hit_result == 1) { // HTCLIENT
+                const cursor_id: usize = switch (hover_zone) {
+                    .minimize, .close, .toggle, .access_row, .card => IDC_HAND,
+                    .none => IDC_ARROW,
+                };
+
+                _ = win.SetCursor(
+                    LoadCursorW(null, cursor_id),
+                );
+
+                return 1;
+            }
+
+            return win.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
+
+        // -------------------------------------------------------------
         // Custom title-bar hit testing.
         // -------------------------------------------------------------
 
@@ -1544,133 +1813,41 @@ fn wndProc(
             const y =
                 signedHighWord(lparam);
 
-            // ---------------------------------------------------------
-            // Title bar buttons
-            // ---------------------------------------------------------
-
-            if (
-                pointInRect(
-                    x,
-                    y,
-                    TITLE_MIN_LEFT,
-                    0,
-                    TITLE_MIN_RIGHT,
-                    TITLEBAR_HEIGHT,
-                )
-            ) {
-                _ = win.ShowWindow(
-                    hwnd,
-                    win.SW_MINIMIZE,
-                );
-
-                return 0;
-            }
-
-            if (
-                pointInRect(
-                    x,
-                    y,
-                    TITLE_MAX_LEFT,
-                    0,
-                    TITLE_MAX_RIGHT,
-                    TITLEBAR_HEIGHT,
-                )
-            ) {
-                if (win.IsZoomed(hwnd) != 0) {
+            switch (hitZone(x, y)) {
+                .minimize => {
                     _ = win.ShowWindow(
                         hwnd,
-                        win.SW_RESTORE,
+                        win.SW_MINIMIZE,
                     );
-                } else {
-                    _ = win.ShowWindow(
+                },
+
+                .close => {
+                    // Close the settings window, but keep Zigoclip
+                    // running in the tray.
+                    hideMainWindow(hwnd);
+                },
+
+                .toggle => {
+                    setAutostartEnabled(
+                        !isAutostartEnabled(),
+                    );
+
+                    _ = win.InvalidateRect(
                         hwnd,
-                        win.SW_MAXIMIZE,
+                        null,
+                        0,
                     );
-                }
+                },
 
-                return 0;
-            }
+                .access_row => {
+                    openAccessManagement();
+                },
 
-            if (
-                pointInRect(
-                    x,
-                    y,
-                    TITLE_CLOSE_LEFT,
-                    0,
-                    TITLE_CLOSE_RIGHT,
-                    TITLEBAR_HEIGHT,
-                )
-            ) {
-                // Close the settings window, but keep Zigoclip
-                // running in the tray.
-                hideMainWindow(hwnd);
+                .card => {
+                    openGithub();
+                },
 
-                return 0;
-            }
-
-            // ---------------------------------------------------------
-            // Startup toggle
-            // ---------------------------------------------------------
-
-            if (
-                pointInRect(
-                    x,
-                    y,
-                    TOGGLE_LEFT - 10,
-                    TOGGLE_TOP - 10,
-                    TOGGLE_RIGHT + 10,
-                    TOGGLE_BOTTOM + 10,
-                )
-            ) {
-                setAutostartEnabled(
-                    !isAutostartEnabled(),
-                );
-
-                _ = win.InvalidateRect(
-                    hwnd,
-                    null,
-                    0,
-                );
-
-                return 0;
-            }
-
-            // ---------------------------------------------------------
-            // Manage access
-            // ---------------------------------------------------------
-
-            if (
-                pointInRect(
-                    x,
-                    y,
-                    ACCESS_LEFT,
-                    ACCESS_TOP - 8,
-                    ACCESS_RIGHT,
-                    ACCESS_BOTTOM + 8,
-                )
-            ) {
-                openAccessManagement();
-
-                return 0;
-            }
-
-            // ---------------------------------------------------------
-            // GitHub card
-            // ---------------------------------------------------------
-
-            if (
-                pointInRect(
-                    x,
-                    y,
-                    CARD_LEFT,
-                    CARD_TOP,
-                    CARD_RIGHT,
-                    CARD_BOTTOM,
-                )
-            ) {
-                openGithub();
-
-                return 0;
+                .none => {},
             }
 
             return 0;
@@ -1783,6 +1960,11 @@ fn wndProc(
                 child_process = null;
             }
 
+            if (github_icon) |icon| {
+                _ = win.DestroyIcon(icon);
+                github_icon = null;
+            }
+
             win.PostQuitMessage(0);
 
             return 0;
@@ -1815,6 +1997,12 @@ pub fn main() !void {
         computeExeDir(
             &exe_path_buf,
         );
+
+    // ---------------------------------------------------------------
+    // Load bundled assets.
+    // ---------------------------------------------------------------
+
+    loadGithubIcon();
 
     // ---------------------------------------------------------------
     // Create Job Object BEFORE spawning the agent.
@@ -1874,7 +2062,7 @@ pub fn main() !void {
         );
 
     wc.hCursor =
-        null;
+        LoadCursorW(null, IDC_ARROW);
 
     wc.hbrBackground =
         null;
