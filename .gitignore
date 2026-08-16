@@ -3,6 +3,9 @@ clipboard.exe
 zigoclip.exe
 clipboard.exe.obj
 clipboard.pdb
+tray.exe
+tray.exe.obj
+tray.pdb
 
 # Zig build artifacts
 .zig-cache/
